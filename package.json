@@ -1,0 +1,130 @@
+{
+  "name": "vertical-diff",
+  "displayName": "Vertical Diff Panel",
+  "description": "Shows the active VS Code diff editor as a stacked vertical view in the panel.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "diff",
+    "vertical diff",
+    "panel",
+    "compare",
+    "review"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "verticalDiff.show",
+        "title": "Show Vertical Diff",
+        "category": "Vertical Diff",
+        "icon": "$(layout-panel)"
+      },
+      {
+        "command": "verticalDiff.previousHunk",
+        "title": "Previous Hunk",
+        "category": "Vertical Diff",
+        "icon": "$(chevron-up)"
+      },
+      {
+        "command": "verticalDiff.nextHunk",
+        "title": "Next Hunk",
+        "category": "Vertical Diff",
+        "icon": "$(chevron-down)"
+      }
+    ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "verticalDiffPanel",
+          "title": "Vertical Diff",
+          "icon": "resources/vertical-diff.svg"
+        }
+      ]
+    },
+    "views": {
+      "verticalDiffPanel": [
+        {
+          "id": "verticalDiff.view",
+          "type": "webview",
+          "name": "Active Diff",
+          "icon": "resources/vertical-diff.svg"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "verticalDiff.show",
+          "when": "view == verticalDiff.view",
+          "group": "navigation@1"
+        },
+        {
+          "command": "verticalDiff.previousHunk",
+          "when": "view == verticalDiff.view",
+          "group": "navigation@2"
+        },
+        {
+          "command": "verticalDiff.nextHunk",
+          "when": "view == verticalDiff.view",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Vertical Diff",
+      "properties": {
+        "verticalDiff.followActiveDiff": {
+          "type": "boolean",
+          "default": true,
+          "description": "Refresh the panel when the active diff editor changes."
+        },
+        "verticalDiff.autoReveal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically reveal the Vertical Diff panel when a diff editor becomes active."
+        },
+        "verticalDiff.maxFileSizeKB": {
+          "type": "number",
+          "default": 512,
+          "minimum": 32,
+          "description": "Maximum size in kilobytes of each diff side that will be rendered in the panel."
+        },
+        "verticalDiff.maxRenderedLines": {
+          "type": "number",
+          "default": 8000,
+          "minimum": 200,
+          "description": "Maximum number of aligned rows that will be rendered before the view falls back to a placeholder message."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "webpack --mode production",
+    "watch": "webpack --mode development --watch",
+    "compile": "tsc --noEmit",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "diff": "^5.2.0",
+    "highlight.js": "^11.11.1"
+  },
+  "devDependencies": {
+    "@types/diff": "^5.2.1",
+    "@types/node": "^20.12.12",
+    "@types/vscode": "^1.85.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.4.5",
+    "webpack": "^5.91.0",
+    "webpack-cli": "^5.1.4"
+  }
+}
