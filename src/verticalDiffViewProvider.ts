@@ -134,6 +134,35 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
     }
 
     /**
+     * 現在のエディター可視範囲に合わせてパネルを同期します。
+     * @param editor 同期元のテキストエディターです。
+     * @returns 同期処理の完了を待機する Promise です。
+     */
+    async syncToVisibleRange(editor: vscode.TextEditor): Promise<void> {
+        if (!this.webviewView || !this.isWebviewReady || this.currentState.kind !== 'diff') {
+            return;
+        }
+
+        const activeDiff = this.tracker.value;
+        const matchedSide = getDiffSideForEditor(activeDiff, editor.document.uri);
+
+        if (!matchedSide || editor.visibleRanges.length === 0) {
+            return;
+        }
+
+        const primaryRange = editor.visibleRanges[0];
+
+        await this.webviewView.webview.postMessage({
+            type: 'syncViewport',
+            payload: {
+                side: matchedSide,
+                startLine: primaryRange.start.line + 1,
+                endLine: primaryRange.end.line + 1
+            }
+        });
+    }
+
+    /**
      * 関連する設定が変わったときに表示を更新します。
      */
     handleConfigurationChange(): void {
@@ -831,6 +860,11 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
 
             if (message.type === 'syncSelection') {
                 syncSelection(message.payload);
+                return;
+            }
+
+            if (message.type === 'syncViewport') {
+                syncViewport(message.payload);
             }
         }
 
@@ -937,16 +971,7 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
                 return;
             }
 
-            const nextIndex = state.model.hunks.findIndex((hunk) => {
-                const start = side === 'original' ? hunk.originalStartLine : hunk.modifiedStartLine;
-                const end = side === 'original' ? hunk.originalEndLine : hunk.modifiedEndLine;
-
-                if (start === null || end === null) {
-                    return false;
-                }
-
-                return line >= start && line <= end;
-            });
+            const nextIndex = findBestHunkIndexForLine(side, line);
 
             if (nextIndex < 0 || nextIndex === state.activeHunkIndex) {
                 return;
@@ -954,6 +979,156 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
 
             state.activeHunkIndex = nextIndex;
             renderActiveWindow();
+        }
+
+        /**
+         * 現在の可視範囲に重なっているハンクを選択します。
+         * @param payload 可視範囲同期に使う情報です。
+         */
+        function syncViewport(payload) {
+            if (!state.model || !state.model.hunks.length || !payload) {
+                return;
+            }
+
+            const side = payload.side;
+            const startLine = payload.startLine;
+            const endLine = payload.endLine;
+
+            if (
+                (side !== 'original' && side !== 'modified')
+                || typeof startLine !== 'number'
+                || typeof endLine !== 'number'
+            ) {
+                return;
+            }
+
+            const normalizedStart = Math.min(startLine, endLine);
+            const normalizedEnd = Math.max(startLine, endLine);
+            const nextIndex = findBestHunkIndexForViewport(side, normalizedStart, normalizedEnd);
+
+            if (nextIndex < 0 || nextIndex === state.activeHunkIndex) {
+                return;
+            }
+
+            state.activeHunkIndex = nextIndex;
+            renderActiveWindow();
+        }
+
+        /**
+         * 指定行に最も適合するハンクを返します。
+         * @param side 判定対象の差分側です。
+         * @param line 行番号です。
+         * @returns 一致したハンクインデックスです。
+         */
+        function findBestHunkIndexForLine(side, line) {
+            if (!state.model) {
+                return -1;
+            }
+
+            const directMatchIndex = state.model.hunks.findIndex((hunk) => {
+                const range = getHunkLineRange(hunk, side);
+                return range !== null && range.kind === 'direct' && line >= range.start && line <= range.end;
+            });
+
+            if (directMatchIndex >= 0) {
+                return directMatchIndex;
+            }
+
+            return findBestHunkIndexForViewport(side, line, line);
+        }
+
+        /**
+         * 可視範囲と最も近いハンクを返します。
+         * @param side 判定対象の差分側です。
+         * @param startLine 可視範囲の開始行です。
+         * @param endLine 可視範囲の終了行です。
+         * @returns 一致したハンクインデックスです。
+         */
+        function findBestHunkIndexForViewport(side, startLine, endLine) {
+            if (!state.model) {
+                return -1;
+            }
+
+            let bestIndex = -1;
+            let bestScore = Number.POSITIVE_INFINITY;
+            const viewportCenter = (startLine + endLine) / 2;
+
+            for (let index = 0; index < state.model.hunks.length; index += 1) {
+                const range = getHunkLineRange(state.model.hunks[index], side);
+
+                if (!range || endLine < range.start || startLine > range.end) {
+                    continue;
+                }
+
+                const rangeCenter = (range.start + range.end) / 2;
+                const score = Math.abs(viewportCenter - rangeCenter) + (range.kind === 'anchor' ? 0.25 : 0);
+
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestIndex = index;
+                }
+            }
+
+            return bestIndex;
+        }
+
+        /**
+         * 指定したハンクの片側に対応する検索レンジを返します。
+         * @param hunk 検索対象のハンクです。
+         * @param side 判定対象の差分側です。
+         * @returns 検索レンジ、または判定不能時は null です。
+         */
+        function getHunkLineRange(hunk, side) {
+            if (!state.model) {
+                return null;
+            }
+
+            const start = side === 'original' ? hunk.originalStartLine : hunk.modifiedStartLine;
+            const end = side === 'original' ? hunk.originalEndLine : hunk.modifiedEndLine;
+
+            if (start !== null && end !== null) {
+                return {
+                    kind: 'direct',
+                    start,
+                    end
+                };
+            }
+
+            const lines = side === 'original' ? state.model.original : state.model.modified;
+            const previousLine = findAdjacentLineNumber(lines, hunk.startRow - 1, -1);
+            const nextLine = findAdjacentLineNumber(lines, hunk.endRow + 1, 1);
+
+            if (previousLine === null && nextLine === null) {
+                return null;
+            }
+
+            const anchorStart = previousLine ?? nextLine;
+            const anchorEnd = nextLine ?? previousLine;
+
+            return {
+                kind: 'anchor',
+                start: Math.min(anchorStart, anchorEnd),
+                end: Math.max(anchorStart, anchorEnd)
+            };
+        }
+
+        /**
+         * 指定位置から近い側の実行行番号を探します。
+         * @param lines 行配列です。
+         * @param startIndex 探索開始インデックスです。
+         * @param step 探索方向です。
+         * @returns 見つかった行番号、または null です。
+         */
+        function findAdjacentLineNumber(lines, startIndex, step) {
+            for (let index = startIndex; index >= 0 && index < lines.length; index += step) {
+                const candidate = lines[index];
+
+                if (candidate && candidate.lineNumber !== null) {
+                    return candidate.lineNumber;
+                }
+            }
+
+            return null;
         }
 
         /**
@@ -1207,8 +1382,8 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
 
             return {
                 hunk,
-                original: buildVisibleLines(model.original, start, end, totalRows),
-                modified: buildVisibleLines(model.modified, start, end, totalRows)
+                original: buildVisibleLines(model.original, start, end),
+                modified: buildVisibleLines(model.modified, start, end)
             };
         }
 
@@ -1234,8 +1409,7 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
          * @param totalRows 全体の行数です。
          * @returns 表示用の行配列です。
          */
-        function buildVisibleLines(lines, start, end, totalRows) {
-            void totalRows;
+        function buildVisibleLines(lines, start, end) {
             const visible = [];
 
             for (let index = start; index <= end; index += 1) {

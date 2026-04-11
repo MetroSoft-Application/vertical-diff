@@ -56,12 +56,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void provider.syncToSelection(event.textEditor);
     });
 
+    const visibleRangeChangeSubscription = vscode.window.onDidChangeTextEditorVisibleRanges((event) => {
+        void provider.syncToVisibleRange(event.textEditor);
+    });
+
     const activeEditorChangeSubscription = vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (!editor) {
             return;
         }
 
         void provider.syncToSelection(editor);
+        void provider.syncToVisibleRange(editor);
     });
 
     context.subscriptions.push(
@@ -70,6 +75,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         nextHunkCommand,
         configurationChangeSubscription,
         selectionChangeSubscription,
+        visibleRangeChangeSubscription,
         activeEditorChangeSubscription
     );
 }
