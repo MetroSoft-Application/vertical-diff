@@ -7,14 +7,10 @@ import {
 } from './diffModel';
 
 /**
- * パネル描画に影響する拡張機能設定です。
+ * パネル描画時に使う固定上限です。
  */
-export interface VerticalDiffSettings {
-    autoReveal: boolean;
-    followActiveDiff: boolean;
-    maxFileSizeKB: number;
-    maxRenderedLines: number;
-}
+const MAX_FILE_SIZE_KB = 512;
+const MAX_RENDERED_LINES = 8000;
 
 /**
  * プレースホルダー状態または差分描画状態を表します。
@@ -41,29 +37,12 @@ interface TextSide {
 }
 
 /**
- * Vertical Diff パネルを制御するユーザー設定を読み取ります。
- * @returns 現在の設定値です。
- */
-export function getSettings(): VerticalDiffSettings {
-    const configuration = vscode.workspace.getConfiguration('verticalDiff');
-
-    return {
-        autoReveal: configuration.get<boolean>('autoReveal', true),
-        followActiveDiff: configuration.get<boolean>('followActiveDiff', true),
-        maxFileSizeKB: configuration.get<number>('maxFileSizeKB', 512),
-        maxRenderedLines: configuration.get<number>('maxRenderedLines', 8000)
-    };
-}
-
-/**
  * 現在追跡中の差分に対する表示状態を読み込み、検証します。
  * @param diffState 現在追跡中の差分状態です。
- * @param settings 描画に使う設定です。
  * @returns 描画またはプレースホルダー用の表示状態です。
  */
 export async function loadViewState(
-    diffState: ActiveDiffState | undefined,
-    settings: VerticalDiffSettings
+    diffState: ActiveDiffState | undefined
 ): Promise<ViewState> {
     if (!diffState) {
         return {
@@ -94,14 +73,14 @@ export async function loadViewState(
         };
     }
 
-    const maxFileSizeBytes = settings.maxFileSizeKB * 1024;
+    const maxFileSizeBytes = MAX_FILE_SIZE_KB * 1024;
 
     if (Buffer.byteLength(originalSide.text, 'utf8') > maxFileSizeBytes
         || Buffer.byteLength(modifiedSide.text, 'utf8') > maxFileSizeBytes) {
         return {
             kind: 'placeholder',
             title: 'Diff Too Large',
-            detail: `Each side must be smaller than ${settings.maxFileSizeKB} KB to render in the panel.`
+            detail: `Each side must be smaller than ${MAX_FILE_SIZE_KB} KB to render in the panel.`
         };
     }
 
@@ -116,7 +95,7 @@ export async function loadViewState(
                 modifiedLanguage: modifiedSide.languageId,
                 originalText: originalSide.text,
                 modifiedText: modifiedSide.text,
-                maxRenderedLines: settings.maxRenderedLines
+                maxRenderedLines: MAX_RENDERED_LINES
             })
         };
     } catch (error) {
@@ -124,7 +103,7 @@ export async function loadViewState(
             return {
                 kind: 'placeholder',
                 title: 'Too Many Lines To Render',
-                detail: `The active diff requires ${error.rowCount} aligned rows, which exceeds the configured limit of ${error.maxRenderedLines}.`
+                detail: `The active diff requires ${error.rowCount} aligned rows, which exceeds the fixed limit of ${error.maxRenderedLines}.`
             };
         }
 

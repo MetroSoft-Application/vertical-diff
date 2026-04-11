@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { ActiveDiffState, ActiveDiffTracker } from './activeDiffTracker';
-import { getSettings, loadViewState, ViewState } from './documentLoader';
+import { loadViewState, ViewState } from './documentLoader';
 
 /**
  * 差分ハンク間の移動方向です。
@@ -41,6 +41,13 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
         this.disposables.push(
             this.tracker.onDidChange(() => {
                 void this.handleTrackedDiffChange();
+            }),
+            vscode.workspace.onDidChangeConfiguration((event) => {
+                if (!event.affectsConfiguration('verticalDiff.fontSize')) {
+                    return;
+                }
+
+                void this.pushViewPreferences();
             })
         );
     }
@@ -62,6 +69,7 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
         const messageDisposable = webviewView.webview.onDidReceiveMessage((message: unknown) => {
             if (isReadyMessage(message)) {
                 this.isWebviewReady = true;
+                void this.pushViewPreferences();
                 void this.pushCurrentState();
             }
         });
@@ -83,7 +91,7 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
      * @returns 表示完了を待機する Promise です。
      */
     async showCurrentDiff(): Promise<void> {
-        await this.refresh(true);
+        await this.refresh();
         await this.reveal(false);
     }
 
@@ -163,13 +171,6 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
     }
 
     /**
-     * 関連する設定が変わったときに表示を更新します。
-     */
-    handleConfigurationChange(): void {
-        void this.refresh(true);
-    }
-
-    /**
      * プロバイダーが保持しているリソースを解放します。
      */
     dispose(): void {
@@ -181,25 +182,18 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
      * @returns 更新処理の完了を待機する Promise です。
      */
     private async handleTrackedDiffChange(): Promise<void> {
-        const settings = getSettings();
+        await this.refresh();
 
-        if (!settings.followActiveDiff && this.currentState.kind === 'diff') {
-            return;
-        }
-
-        await this.refresh(true);
-
-        if (settings.autoReveal && this.tracker.value) {
+        if (this.tracker.value) {
             await this.reveal(true);
         }
     }
 
     /**
      * 現在の表示状態を再構築して Webview へ送信します。
-     * @param force 強制更新する場合は true です。
      * @returns 更新処理の完了を待機する Promise です。
      */
-    private async refresh(force: boolean): Promise<void> {
+    private async refresh(): Promise<void> {
         if (this.isRefreshing) {
             this.pendingRefresh = true;
             return;
@@ -208,20 +202,14 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
         this.isRefreshing = true;
 
         try {
-            const settings = getSettings();
-
-            if (!force && !settings.followActiveDiff) {
-                return;
-            }
-
-            this.currentState = await loadViewState(this.tracker.value, settings);
+            this.currentState = await loadViewState(this.tracker.value);
             await this.pushCurrentState();
         } finally {
             this.isRefreshing = false;
 
             if (this.pendingRefresh) {
                 this.pendingRefresh = false;
-                void this.refresh(true);
+                void this.refresh();
             }
         }
     }
@@ -268,6 +256,23 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
     }
 
     /**
+     * 現在のビュー表示設定を Webview へ送信します。
+     * @returns 送信処理の完了を待機する Promise です。
+     */
+    private async pushViewPreferences(): Promise<void> {
+        if (!this.webviewView || !this.isWebviewReady) {
+            return;
+        }
+
+        await this.webviewView.webview.postMessage({
+            type: 'viewPreferences',
+            payload: {
+                fontSize: getConfiguredVerticalDiffFontSize() ?? null
+            }
+        });
+    }
+
+    /**
      * VS Code コマンドを実行し、ベストエフォートの失敗は握りつぶします。
      * @param command 実行するコマンド ID です。
      * @returns 実行処理の完了を待機する Promise です。
@@ -287,6 +292,7 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
      */
     private getHtml(webview: vscode.Webview): string {
         const nonce = getNonce();
+        const configuredFontSize = getConfiguredVerticalDiffFontSize();
 
         void webview;
 
@@ -300,8 +306,9 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
     <style nonce="${nonce}">
         :root {
             color-scheme: light dark;
-            --vd-font-size: 11px;
-            --vd-line-height: 18px;
+            --vd-font-size-default: var(--vscode-editor-font-size, 14px);
+            --vd-font-size: var(--vd-font-size-default);
+            --vd-line-height: max(16px, calc(var(--vd-font-size) * 1.55));
         }
 
         * {
@@ -779,13 +786,16 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
         const persistedState = vscode.getState() || {};
         const CONTEXT_BEFORE_ROWS = 0;
         const CONTEXT_AFTER_ROWS = 0;
+        const MIN_FONT_SIZE = 9;
+        const MAX_FONT_SIZE = 72;
         const state = {
             model: undefined,
             activeHunkIndex: -1,
             syncingScroll: false,
             resizing: false,
-            userAdjustedZoom: typeof persistedState.fontSize === 'number' && Number.isFinite(persistedState.fontSize),
-            fontSize: 11,
+            configuredFontSize: ${configuredFontSize ?? 'null'},
+            userAdjustedZoom: false,
+            fontSize: 14,
             splitRatio: clampNumber(persistedState.splitRatio, 0.5, 0.22, 0.78)
         };
 
@@ -820,15 +830,13 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
         elements.splitter.addEventListener('pointerdown', beginResize);
         window.addEventListener('pointermove', resizeFromPointer);
         window.addEventListener('pointerup', endResize);
-        window.addEventListener('resize', handleWindowResize);
         elements.splitter.addEventListener('dblclick', () => {
             state.splitRatio = 0.5;
             applyUiPreferences();
         });
 
-        state.fontSize = state.userAdjustedZoom
-            ? clampNumber(persistedState.fontSize, 11, 9, 18)
-            : getAutoFontSize();
+        applyConfiguredFontSizeVariable();
+        state.fontSize = getAutoFontSize();
 
         applyUiPreferences();
 
@@ -853,6 +861,11 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
                 return;
             }
 
+            if (message.type === 'viewPreferences') {
+                applyViewPreferences(message.payload);
+                return;
+            }
+
             if (message.type === 'navigate') {
                 navigate(message.direction);
                 return;
@@ -866,6 +879,18 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             if (message.type === 'syncViewport') {
                 syncViewport(message.payload);
             }
+        }
+
+        /**
+         * 拡張機能側の表示設定変更を現在の状態へ反映します。
+         * @param payload 反映対象の設定です。
+         */
+        function applyViewPreferences(payload) {
+            state.configuredFontSize = normalizeConfiguredFontSize(payload?.fontSize);
+            state.userAdjustedZoom = false;
+            applyConfiguredFontSizeVariable();
+            state.fontSize = getAutoFontSize();
+            applyUiPreferences(false);
         }
 
         /**
@@ -1159,8 +1184,13 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
 
             event.preventDefault();
             const direction = event.deltaY > 0 ? -1 : 1;
+
+            if (!state.userAdjustedZoom) {
+                state.fontSize = getAutoFontSize();
+            }
+
             state.userAdjustedZoom = true;
-            state.fontSize = clampNumber(state.fontSize + direction, state.fontSize, 9, 18);
+            state.fontSize = clampNumber(state.fontSize + direction, state.fontSize, MIN_FONT_SIZE, MAX_FONT_SIZE);
             applyUiPreferences();
         }
 
@@ -1225,33 +1255,30 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
         }
 
         /**
-         * Webview のサイズ変更に応じて自動ズーム値を再計算します。
-         */
-        function handleWindowResize() {
-            if (state.userAdjustedZoom) {
-                return;
-            }
-
-            state.fontSize = getAutoFontSize();
-            applyUiPreferences(false);
-        }
-
-        /**
-         * 現在のパネル幅に収まるフォントサイズを選びます。
+         * 現在のメインエディター設定に追従する自動フォントサイズを返します。
          * @returns 自動計算されたフォントサイズです。
          */
         function getAutoFontSize() {
-            const width = elements.surface.clientWidth || window.innerWidth;
-
-            if (width < 640) {
-                return 9;
+            if (state.configuredFontSize !== null) {
+                return state.configuredFontSize;
             }
 
-            if (width < 960) {
-                return 10;
+            const fontSize = Number.parseFloat(
+                getComputedStyle(document.documentElement).getPropertyValue('--vscode-editor-font-size')
+            );
+            return clampNumber(fontSize, 14, MIN_FONT_SIZE, MAX_FONT_SIZE);
+        }
+
+        /**
+         * 現在の設定値に応じて既定フォントサイズ変数を更新します。
+         */
+        function applyConfiguredFontSizeVariable() {
+            if (state.configuredFontSize === null) {
+                document.documentElement.style.removeProperty('--vd-font-size-default');
+                return;
             }
 
-            return 11;
+            document.documentElement.style.setProperty('--vd-font-size-default', state.configuredFontSize + 'px');
         }
 
         /**
@@ -1259,9 +1286,13 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
          * @param shouldPersist 状態を保存する場合は true です。
          */
         function applyUiPreferences(shouldPersist = true) {
-            const lineHeight = Math.max(16, Math.round(state.fontSize * 1.55));
-            document.documentElement.style.setProperty('--vd-font-size', state.fontSize + 'px');
-            document.documentElement.style.setProperty('--vd-line-height', lineHeight + 'px');
+            if (state.userAdjustedZoom) {
+                document.documentElement.style.setProperty('--vd-font-size', state.fontSize + 'px');
+            } else {
+                document.documentElement.style.removeProperty('--vd-font-size');
+                document.documentElement.style.removeProperty('--vd-line-height');
+            }
+
             elements.diffView.style.gridTemplateRows = state.splitRatio + 'fr 6px ' + (1 - state.splitRatio) + 'fr';
             if (shouldPersist) {
                 persistUiPreferences();
@@ -1273,9 +1304,21 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
          */
         function persistUiPreferences() {
             vscode.setState({
-                fontSize: state.userAdjustedZoom ? state.fontSize : undefined,
                 splitRatio: state.splitRatio
             });
+        }
+
+        /**
+         * 設定から受け取ったフォントサイズを安全な範囲へ補正します。
+         * @param value 判定対象の値です。
+         * @returns 有効なフォントサイズ、または未設定時は null です。
+         */
+        function normalizeConfiguredFontSize(value) {
+            if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+                return null;
+            }
+
+            return clampNumber(value, 14, MIN_FONT_SIZE, MAX_FONT_SIZE);
         }
 
         /**
@@ -1346,7 +1389,7 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
                 return;
             }
 
-            const summary = 'Hunk ' + (state.activeHunkIndex + 1) + ' / ' + state.model.hunks.length;
+            const summary = 'Change ' + (state.activeHunkIndex + 1) + ' / ' + state.model.hunks.length;
             if (elements.hunkSummary) {
                 elements.hunkSummary.textContent = summary;
             }
@@ -1425,6 +1468,20 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
 </body>
 </html>`;
     }
+}
+
+/**
+ * Vertical Diff の設定から明示的なフォントサイズを取得します。
+ * @returns 有効な設定値、未設定時は undefined です。
+ */
+function getConfiguredVerticalDiffFontSize(): number | undefined {
+    const value = vscode.workspace.getConfiguration('verticalDiff').get<number>('fontSize');
+
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+        return undefined;
+    }
+
+    return Math.min(72, Math.max(9, value));
 }
 
 /**

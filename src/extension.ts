@@ -46,12 +46,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
     );
 
-    const configurationChangeSubscription = vscode.workspace.onDidChangeConfiguration((event) => {
-        if (event.affectsConfiguration('verticalDiff')) {
-            provider.handleConfigurationChange();
-        }
-    });
-
     const selectionChangeSubscription = vscode.window.onDidChangeTextEditorSelection((event) => {
         void provider.syncToSelection(event.textEditor);
     });
@@ -73,7 +67,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         showCommand,
         previousHunkCommand,
         nextHunkCommand,
-        configurationChangeSubscription,
         selectionChangeSubscription,
         visibleRangeChangeSubscription,
         activeEditorChangeSubscription

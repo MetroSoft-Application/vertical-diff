@@ -1,9 +1,15 @@
 {
   "name": "vertical-diff",
-  "displayName": "Vertical Diff Panel",
-  "description": "Shows the active VS Code diff editor as a stacked vertical view in the panel.",
-  "version": "0.0.1",
-  "publisher": "local",
+  "displayName": "Vertical Diff",
+  "description": "A VS Code extension that mirrors the active text diff editor into a stacked panel view for review.",
+  "version": "1.0.0",
+  "publisher": "MetroSoft-Application",
+  "icon": "resources/vertical-diff.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MetroSoft-Application/vertical-diff.git"
+  },
+  "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -31,13 +37,13 @@
       },
       {
         "command": "verticalDiff.previousHunk",
-        "title": "Previous Hunk",
+        "title": "Previous Change",
         "category": "Vertical Diff",
         "icon": "$(chevron-up)"
       },
       {
         "command": "verticalDiff.nextHunk",
-        "title": "Next Hunk",
+        "title": "Next Change",
         "category": "Vertical Diff",
         "icon": "$(chevron-down)"
       }
@@ -83,27 +89,12 @@
     "configuration": {
       "title": "Vertical Diff",
       "properties": {
-        "verticalDiff.followActiveDiff": {
-          "type": "boolean",
-          "default": true,
-          "description": "Refresh the panel when the active diff editor changes."
-        },
-        "verticalDiff.autoReveal": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically reveal the Vertical Diff panel when a diff editor becomes active."
-        },
-        "verticalDiff.maxFileSizeKB": {
-          "type": "number",
-          "default": 512,
-          "minimum": 32,
-          "description": "Maximum size in kilobytes of each diff side that will be rendered in the panel."
-        },
-        "verticalDiff.maxRenderedLines": {
-          "type": "number",
-          "default": 8000,
-          "minimum": 200,
-          "description": "Maximum number of aligned rows that will be rendered before the view falls back to a placeholder message."
+        "verticalDiff.fontSize": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "scope": "window",
+          "markdownDescription": "Font size used by Vertical Diff. Set to `0` to follow `editor.fontSize`."
         }
       }
     }
