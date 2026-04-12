@@ -2,7 +2,7 @@
   "name": "vertical-diff",
   "displayName": "Vertical Diff",
   "description": "A VS Code extension that mirrors the active text diff editor into a stacked panel view for review.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "MetroSoft-Application",
   "icon": "resources/vertical-diff.png",
   "repository": {
@@ -95,6 +95,12 @@
           "minimum": 0,
           "scope": "window",
           "markdownDescription": "Font size used by Vertical Diff. Set to `0` to follow `editor.fontSize`."
+        },
+        "verticalDiff.renderWhitespace": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "markdownDescription": "Render half-width spaces as `·` and tabs as `→` in the Vertical Diff panel."
         }
       }
     }

@@ -53,6 +53,7 @@ export interface BuildDiffModelOptions {
     originalText: string;
     modifiedText: string;
     maxRenderedLines: number;
+    renderWhitespace: boolean;
 }
 
 /**
@@ -85,7 +86,8 @@ function buildInlineHighlightedDiffPair(
     originalText: string,
     modifiedText: string,
     originalLanguageId: string,
-    modifiedLanguageId: string
+    modifiedLanguageId: string,
+    renderWhitespace: boolean
 ): { originalHtml: string; modifiedHtml: string; } {
     let prefixLength = 0;
     const commonPrefixLimit = Math.min(originalText.length, modifiedText.length);
@@ -109,13 +111,13 @@ function buildInlineHighlightedDiffPair(
     const originalMiddleEnd = originalText.length - suffixLength;
     const modifiedMiddleEnd = modifiedText.length - suffixLength;
 
-    const originalPrefixHtml = highlightLine(originalText.slice(0, prefixLength), originalLanguageId);
-    const originalMiddleHtml = highlightLine(originalText.slice(prefixLength, originalMiddleEnd), originalLanguageId);
-    const originalSuffixHtml = highlightLine(originalText.slice(originalMiddleEnd), originalLanguageId);
+    const originalPrefixHtml = highlightLine(originalText.slice(0, prefixLength), originalLanguageId, renderWhitespace);
+    const originalMiddleHtml = highlightLine(originalText.slice(prefixLength, originalMiddleEnd), originalLanguageId, renderWhitespace);
+    const originalSuffixHtml = highlightLine(originalText.slice(originalMiddleEnd), originalLanguageId, renderWhitespace);
 
-    const modifiedPrefixHtml = highlightLine(modifiedText.slice(0, prefixLength), modifiedLanguageId);
-    const modifiedMiddleHtml = highlightLine(modifiedText.slice(prefixLength, modifiedMiddleEnd), modifiedLanguageId);
-    const modifiedSuffixHtml = highlightLine(modifiedText.slice(modifiedMiddleEnd), modifiedLanguageId);
+    const modifiedPrefixHtml = highlightLine(modifiedText.slice(0, prefixLength), modifiedLanguageId, renderWhitespace);
+    const modifiedMiddleHtml = highlightLine(modifiedText.slice(prefixLength, modifiedMiddleEnd), modifiedLanguageId, renderWhitespace);
+    const modifiedSuffixHtml = highlightLine(modifiedText.slice(modifiedMiddleEnd), modifiedLanguageId, renderWhitespace);
 
     return {
         originalHtml: originalPrefixHtml + wrapInlineDiffSpan(originalMiddleHtml, 'inline-removed') + originalSuffixHtml,
@@ -165,8 +167,8 @@ export function buildDiffModel(options: BuildDiffModelOptions): DiffRenderModel 
      */
     const pushEqualLines = (lines: string[]) => {
         for (const line of lines) {
-            originalRows.push(createLine(originalLineNumber++, line, 'equal', options.originalLanguage));
-            modifiedRows.push(createLine(modifiedLineNumber++, line, 'equal', options.modifiedLanguage));
+            originalRows.push(createLine(originalLineNumber++, line, 'equal', options.originalLanguage, options.renderWhitespace));
+            modifiedRows.push(createLine(modifiedLineNumber++, line, 'equal', options.modifiedLanguage, options.renderWhitespace));
             rowCount += 1;
             ensureLimit();
         }
@@ -186,7 +188,7 @@ export function buildDiffModel(options: BuildDiffModelOptions): DiffRenderModel 
 
         for (const line of lines) {
             originalRows.push(createPlaceholder('insert-placeholder'));
-            modifiedRows.push(createLine(modifiedLineNumber++, line, 'insert', options.modifiedLanguage));
+            modifiedRows.push(createLine(modifiedLineNumber++, line, 'insert', options.modifiedLanguage, options.renderWhitespace));
             rowCount += 1;
             ensureLimit();
         }
@@ -215,7 +217,7 @@ export function buildDiffModel(options: BuildDiffModelOptions): DiffRenderModel 
         const originalStartLine = originalLineNumber;
 
         for (const line of lines) {
-            originalRows.push(createLine(originalLineNumber++, line, 'delete', options.originalLanguage));
+            originalRows.push(createLine(originalLineNumber++, line, 'delete', options.originalLanguage, options.renderWhitespace));
             modifiedRows.push(createPlaceholder('delete-placeholder'));
             rowCount += 1;
             ensureLimit();
@@ -254,18 +256,19 @@ export function buildDiffModel(options: BuildDiffModelOptions): DiffRenderModel 
 
             const originalRow = removedLine === undefined
                 ? createPlaceholder('insert-placeholder')
-                : createLine(originalLineNumber++, removedLine, 'delete', options.originalLanguage);
+                : createLine(originalLineNumber++, removedLine, 'delete', options.originalLanguage, options.renderWhitespace);
 
             const modifiedRow = addedLine === undefined
                 ? createPlaceholder('delete-placeholder')
-                : createLine(modifiedLineNumber++, addedLine, 'insert', options.modifiedLanguage);
+                : createLine(modifiedLineNumber++, addedLine, 'insert', options.modifiedLanguage, options.renderWhitespace);
 
             if (removedLine !== undefined && addedLine !== undefined) {
                 const inlinePair = buildInlineHighlightedDiffPair(
                     removedLine,
                     addedLine,
                     options.originalLanguage,
-                    options.modifiedLanguage
+                    options.modifiedLanguage,
+                    options.renderWhitespace
                 );
                 originalRow.html = inlinePair.originalHtml;
                 modifiedRow.html = inlinePair.modifiedHtml;
@@ -375,12 +378,13 @@ function createLine(
     lineNumber: number,
     value: string,
     kind: RenderLineKind,
-    languageId: string
+    languageId: string,
+    renderWhitespace: boolean
 ): RenderLine {
     return {
         lineNumber,
         text: value,
-        html: highlightLine(value, languageId),
+        html: highlightLine(value, languageId, renderWhitespace),
         kind
     };
 }

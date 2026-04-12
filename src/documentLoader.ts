@@ -95,7 +95,8 @@ export async function loadViewState(
                 modifiedLanguage: modifiedSide.languageId,
                 originalText: originalSide.text,
                 modifiedText: modifiedSide.text,
-                maxRenderedLines: MAX_RENDERED_LINES
+                maxRenderedLines: MAX_RENDERED_LINES,
+                renderWhitespace: getConfiguredRenderWhitespace()
             })
         };
     } catch (error) {
@@ -163,4 +164,12 @@ function describeUri(uri: vscode.Uri, fallbackLabel: string): string {
  */
 function containsNullByte(value: string): boolean {
     return value.includes('\u0000');
+}
+
+/**
+ * Vertical Diff の設定から空白可視化の有効状態を取得します。
+ * @returns 可視化が有効な場合は true、それ以外は false です。
+ */
+function getConfiguredRenderWhitespace(): boolean {
+    return vscode.workspace.getConfiguration('verticalDiff').get<boolean>('renderWhitespace') === true;
 }

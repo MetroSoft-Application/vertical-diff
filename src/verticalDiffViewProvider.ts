@@ -43,11 +43,20 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
                 void this.handleTrackedDiffChange();
             }),
             vscode.workspace.onDidChangeConfiguration((event) => {
-                if (!event.affectsConfiguration('verticalDiff.fontSize')) {
+                const fontSizeChanged = event.affectsConfiguration('verticalDiff.fontSize');
+                const whitespaceChanged = event.affectsConfiguration('verticalDiff.renderWhitespace');
+
+                if (!fontSizeChanged && !whitespaceChanged) {
                     return;
                 }
 
-                void this.pushViewPreferences();
+                if (fontSizeChanged) {
+                    void this.pushViewPreferences();
+                }
+
+                if (whitespaceChanged) {
+                    void this.refresh();
+                }
             })
         );
     }
@@ -592,6 +601,31 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
         .placeholder-marker--delete {
             color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c);
             opacity: 0.9;
+        }
+
+        .vd-ws {
+            position: relative;
+            display: inline-block;
+            color: transparent;
+            white-space: pre;
+            tab-size: inherit;
+            vertical-align: baseline;
+        }
+
+        .vd-ws::before {
+            position: absolute;
+            inset: 0 auto 0 0;
+            color: var(--vscode-editorWhitespace-foreground, var(--vscode-descriptionForeground));
+            opacity: 1;
+            pointer-events: none;
+        }
+
+        .vd-ws-space::before {
+            content: '·';
+        }
+
+        .vd-ws-tab::before {
+            content: '→';
         }
 
         .line--insert {
