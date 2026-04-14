@@ -1,4 +1,5 @@
 import hljs from 'highlight.js/lib/core';
+import csharp from 'highlight.js/lib/languages/csharp';
 import css from 'highlight.js/lib/languages/css';
 import javascript from 'highlight.js/lib/languages/javascript';
 import json from 'highlight.js/lib/languages/json';
@@ -7,6 +8,7 @@ import plaintext from 'highlight.js/lib/languages/plaintext';
 import typescript from 'highlight.js/lib/languages/typescript';
 import xml from 'highlight.js/lib/languages/xml';
 
+hljs.registerLanguage('csharp', csharp);
 hljs.registerLanguage('css', css);
 hljs.registerLanguage('javascript', javascript);
 hljs.registerLanguage('json', json);
@@ -16,6 +18,7 @@ hljs.registerLanguage('typescript', typescript);
 hljs.registerLanguage('xml', xml);
 
 const languageAliases: Record<string, string> = {
+    csharp: 'csharp',
     css: 'css',
     html: 'xml',
     javascript: 'javascript',
