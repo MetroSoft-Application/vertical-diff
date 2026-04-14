@@ -1,3 +1,7 @@
+## [1.0.2]
+
+- Add highlights for major languages.
+
 ## [1.0.1]
 
 - Enabled whitespace rendering by default and added the `verticalDiff.renderWhitespace` setting.
