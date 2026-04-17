@@ -187,15 +187,11 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
     }
 
     /**
-     * 追跡中の差分変更に応じて表示を更新し、必要ならパネルを表示します。
+     * 追跡中の差分変更に応じて表示を更新します。
      * @returns 更新処理の完了を待機する Promise です。
      */
     private async handleTrackedDiffChange(): Promise<void> {
         await this.refresh();
-
-        if (this.tracker.value) {
-            await this.reveal(true);
-        }
     }
 
     /**

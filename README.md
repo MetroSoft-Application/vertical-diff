@@ -8,7 +8,7 @@ Shows the active VS Code diff in a stacked panel.
 - Aligned rows for easier comparison
 - Line and inline change highlighting
 - Optional whitespace markers for spaces and tabs
-- Follows the active diff automatically
+- Follows the active diff automatically while the panel is open
 - Move to the previous or next change
 - Placeholder view for large or unsupported content
 
@@ -16,10 +16,16 @@ Shows the active VS Code diff in a stacked panel.
 
 ![demo](./resources/demo.gif)
 
+### Show the panel
+
+1. Open a diff.
+2. Run **"Vertical Diff: Show Vertical Diff"** or open the **Vertical Diff** panel view.
+
 ### Move between changes
 
 1. Open a diff.
-2. Use the toolbar or run **"Vertical Diff: Previous Change"** and **"Vertical Diff: Next Change"**.
+2. Show the Vertical Diff panel.
+3. Use the toolbar or run **"Vertical Diff: Previous Change"** and **"Vertical Diff: Next Change"**.
 
 ## Requirements
 
@@ -34,7 +40,7 @@ Shows the active VS Code diff in a stacked panel.
 ## Notes
 
 - Read-only panel view
-- The first automatic open may move focus
+- The panel does not open automatically when you switch to a diff
 - Large or unsupported content is shown as a placeholder
 
 ## License
