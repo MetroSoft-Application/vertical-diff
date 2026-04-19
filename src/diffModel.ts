@@ -30,12 +30,22 @@ export interface DiffHunk {
 }
 
 /**
+ * 各ペインのヘッダーに表示するメタ情報です。
+ */
+export interface DiffPaneMetadata {
+    encoding: string;
+    lineEnding: string;
+}
+
+/**
  * Webview へ渡す整列済みの描画モデル全体です。
  */
 export interface DiffRenderModel {
     title: string;
     originalLabel: string;
     modifiedLabel: string;
+    originalMeta: DiffPaneMetadata;
+    modifiedMeta: DiffPaneMetadata;
     original: RenderLine[];
     modified: RenderLine[];
     hunks: DiffHunk[];
@@ -48,6 +58,8 @@ export interface BuildDiffModelOptions {
     title: string;
     originalLabel: string;
     modifiedLabel: string;
+    originalMeta: DiffPaneMetadata;
+    modifiedMeta: DiffPaneMetadata;
     originalLanguage: string;
     modifiedLanguage: string;
     originalText: string;
@@ -148,7 +160,9 @@ export function buildDiffModel(options: BuildDiffModelOptions): DiffRenderModel 
     const originalRows: RenderLine[] = [];
     const modifiedRows: RenderLine[] = [];
     const hunks: DiffHunk[] = [];
-    const changes = diffLines(options.originalText, options.modifiedText);
+    const normalizedOriginalText = normalizeLineEndings(options.originalText);
+    const normalizedModifiedText = normalizeLineEndings(options.modifiedText);
+    const changes = diffLines(normalizedOriginalText, normalizedModifiedText);
 
     let rowCount = 0;
     let originalLineNumber = 1;
@@ -321,6 +335,8 @@ export function buildDiffModel(options: BuildDiffModelOptions): DiffRenderModel 
         title: options.title,
         originalLabel: options.originalLabel,
         modifiedLabel: options.modifiedLabel,
+        originalMeta: options.originalMeta,
+        modifiedMeta: options.modifiedMeta,
         original: originalRows,
         modified: modifiedRows,
         hunks: mergedHunks
@@ -413,7 +429,7 @@ function splitLines(value: string): string[] {
         return [];
     }
 
-    const normalized = value.replace(/\r\n/g, '\n');
+    const normalized = normalizeLineEndings(value);
     const lines = normalized.split('\n');
 
     if (lines[lines.length - 1] === '') {
@@ -421,4 +437,13 @@ function splitLines(value: string): string[] {
     }
 
     return lines;
+}
+
+/**
+ * 差分比較と行分割で扱う改行コードを LF に正規化します。
+ * @param value 正規化対象の文字列です。
+ * @returns 改行コードを LF にそろえた文字列です。
+ */
+function normalizeLineEndings(value: string): string {
+    return value.replace(/\r\n?/g, '\n');
 }

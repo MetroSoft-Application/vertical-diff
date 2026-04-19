@@ -448,6 +448,7 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             display: flex;
             align-items: center;
             gap: 8px;
+            flex: 1 1 auto;
             min-width: 0;
         }
 
@@ -472,7 +473,12 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
         }
 
         .pane-meta {
-            display: none;
+            min-width: 0;
+            flex-shrink: 0;
+            color: var(--vscode-descriptionForeground);
+            font-size: 11px;
+            white-space: nowrap;
+            text-align: right;
         }
 
         .splitter {
@@ -784,7 +790,7 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
                         <div class="pane-badge">Original</div>
                         <div class="pane-path" id="original-path"></div>
                     </div>
-                    <div class="pane-meta" id="original-meta">Upper pane</div>
+                    <div class="pane-meta" id="original-meta">Encoding: N/A | EOL: N/A</div>
                 </div>
                 <div class="pane-scroll" id="original-scroll">
                     <div class="lines" id="original-lines"></div>
@@ -801,7 +807,7 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
                         <div class="pane-badge">Modified</div>
                         <div class="pane-path" id="modified-path"></div>
                     </div>
-                    <div class="pane-meta" id="modified-summary">Lower pane</div>
+                    <div class="pane-meta" id="modified-meta">Encoding: N/A | EOL: N/A</div>
                 </div>
                 <div class="pane-scroll" id="modified-scroll">
                     <div class="lines" id="modified-lines"></div>
@@ -836,7 +842,7 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             emptyTitle: document.getElementById('empty-title'),
             emptyDetail: document.getElementById('empty-detail'),
             hunkSummary: document.getElementById('hunk-summary'),
-            modifiedSummary: document.getElementById('modified-summary'),
+            modifiedMeta: document.getElementById('modified-meta'),
             originalMeta: document.getElementById('original-meta'),
             originalLines: document.getElementById('original-lines'),
             originalPath: document.getElementById('original-path'),
@@ -948,7 +954,20 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             elements.diffTitle.textContent = model.title;
             elements.originalPath.textContent = model.originalLabel;
             elements.modifiedPath.textContent = model.modifiedLabel;
+            elements.originalMeta.textContent = formatPaneMeta(model.originalMeta);
+            elements.modifiedMeta.textContent = formatPaneMeta(model.modifiedMeta);
             renderActiveWindow();
+        }
+
+        /**
+         * ペインヘッダー用のメタ情報文字列を返します。
+         * @param meta 表示対象のメタ情報です。
+         * @returns 表示用文字列です。
+         */
+        function formatPaneMeta(meta) {
+            const encoding = meta && typeof meta.encoding === 'string' ? meta.encoding : 'N/A';
+            const lineEnding = meta && typeof meta.lineEnding === 'string' ? meta.lineEnding : 'N/A';
+            return 'Encoding: ' + encoding + ' | EOL: ' + lineEnding;
         }
 
         /**
@@ -1413,18 +1432,12 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
                 if (elements.hunkSummary) {
                     elements.hunkSummary.textContent = 'No changes';
                 }
-                if (elements.modifiedSummary) {
-                    elements.modifiedSummary.textContent = '';
-                }
                 return;
             }
 
             const summary = 'Change ' + (state.activeHunkIndex + 1) + ' / ' + state.model.hunks.length;
             if (elements.hunkSummary) {
                 elements.hunkSummary.textContent = summary;
-            }
-            if (elements.modifiedSummary) {
-                elements.modifiedSummary.textContent = '';
             }
         }
 
