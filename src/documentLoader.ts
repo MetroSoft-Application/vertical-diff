@@ -45,9 +45,12 @@ export type ViewState =
  */
 interface TextSide {
     label: string;
+    isGitScheme: boolean;
     languageId: string;
     text: string;
     missing: boolean;
+    isDirty: boolean;
+    eolOverride?: string;
     encoding?: string;
     eol?: vscode.EndOfLine;
     lineCount: number;
@@ -60,6 +63,15 @@ interface TextSide {
 interface TextCandidate {
     normalizedText: string;
     score: number;
+}
+
+/**
+ * Git 仮想 URI に埋め込まれている元リソース情報です。
+ */
+interface GitUriParams {
+    path: string;
+    ref: string;
+    submoduleOf?: string;
 }
 
 /**
@@ -91,10 +103,14 @@ export async function loadViewState(
         };
     }
 
-    ({
-        originalSide,
-        modifiedSide
-    } = harmonizeTextSidesForDiff(originalSide, modifiedSide));
+    // git 同士の比較は autocrlf による偽差分が発生しないため harmonize をスキップします。
+    // harmonize は file:// vs git:// の改行コード差を吸収するためだけに使います。
+    if (!originalSide.isGitScheme || !modifiedSide.isGitScheme) {
+        ({
+            originalSide,
+            modifiedSide
+        } = harmonizeTextSidesForDiff(originalSide, modifiedSide));
+    }
 
     if (containsNullByte(originalSide.text) || containsNullByte(modifiedSide.text)) {
         return {
@@ -154,6 +170,22 @@ export async function loadViewState(
 async function readTextSide(uri: vscode.Uri, fallbackLabel: string): Promise<TextSide> {
     const label = describeUri(uri, fallbackLabel);
 
+    // git 仮想ドキュメントは autocrlf により常に LF 正規化されるため、
+    // EOL 表示専用にディスクの実ファイルを別途読んで判定します。
+    // rawBytes は差分テキスト比較用として git 仮想 FS から読みます。
+    let eolOverride: string | undefined;
+    if (uri.scheme === 'git') {
+        const gitUriParams = tryParseGitUri(uri);
+        if (gitUriParams?.path) {
+            try {
+                const diskBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(gitUriParams.path));
+                eolOverride = detectLineEndingLabel(diskBytes, undefined);
+            } catch {
+                // 削除済みファイル等、実ファイルが存在しない場合は無視します。
+            }
+        }
+    }
+
     try {
         const [document, rawBytes] = await Promise.all([
             vscode.workspace.openTextDocument(uri),
@@ -162,9 +194,12 @@ async function readTextSide(uri: vscode.Uri, fallbackLabel: string): Promise<Tex
 
         return {
             label,
+            isGitScheme: uri.scheme === 'git',
             languageId: document.languageId || 'plaintext',
             text: document.getText(),
             missing: false,
+            isDirty: document.isDirty,
+            eolOverride,
             encoding: document.encoding,
             eol: document.eol,
             lineCount: document.lineCount,
@@ -173,9 +208,12 @@ async function readTextSide(uri: vscode.Uri, fallbackLabel: string): Promise<Tex
     } catch {
         return {
             label,
+            isGitScheme: uri.scheme === 'git',
             languageId: 'plaintext',
             text: '',
             missing: true,
+            isDirty: false,
+            eolOverride,
             encoding: undefined,
             eol: undefined,
             lineCount: 0,
@@ -199,7 +237,7 @@ function buildPaneMetadata(side: TextSide): DiffPaneMetadata {
 
     return {
         encoding: formatEncodingLabel(side.encoding, side.rawBytes),
-        lineEnding: formatLineEndingLabel(side)
+        lineEnding: side.eolOverride ?? formatLineEndingLabel(side)
     };
 }
 
@@ -241,6 +279,14 @@ function harmonizeTextSidesForDiff(
  * @returns 共通テキストが見つかった場合はその文字列、見つからなければ undefined です。
  */
 function resolveSharedComparisonText(originalSide: TextSide, modifiedSide: TextSide): string | undefined {
+    // git 同士の比較では改行コードを正規化しません。
+    // autocrlf による偽差分が発生しないため、改行コード変更も差分として検知します。
+    if (originalSide.isGitScheme && modifiedSide.isGitScheme) {
+        const originalStrict = normalizeComparisonTextStrict(originalSide.text);
+        const modifiedStrict = normalizeComparisonTextStrict(modifiedSide.text);
+        return originalStrict === modifiedStrict ? originalStrict : undefined;
+    }
+
     const originalNormalized = normalizeComparisonText(originalSide.text);
     const modifiedNormalized = normalizeComparisonText(modifiedSide.text);
 
@@ -350,6 +396,16 @@ function normalizeComparisonText(value: string): string {
 }
 
 /**
+ * git 同士の比較用に、改行コードを正規化せず BOM と Unicode 差のみ吸収します。
+ * @param value 正規化対象の文字列です。
+ * @returns 比較用に正規化した文字列です。
+ */
+function normalizeComparisonTextStrict(value: string): string {
+    const withoutBom = value.startsWith('\uFEFF') ? value.slice(1) : value;
+    return withoutBom.normalize('NFC');
+}
+
+/**
  * 表示用の文字コードラベルを返します。
  * @param encoding VS Code が報告するエンコーディング名です。
  * @param rawBytes 元の生バイト列です。
@@ -399,15 +455,121 @@ function formatLineEndingLabel(side: TextSide): string {
         return 'None';
     }
 
-    if (side.eol === vscode.EndOfLine.CRLF) {
+    if (side.isDirty) {
+        const liveLineEnding = formatDocumentLineEnding(side.eol);
+
+        if (liveLineEnding) {
+            return liveLineEnding;
+        }
+    }
+
+    const detectedLineEnding = detectLineEndingLabel(side.rawBytes, side.encoding);
+
+    if (detectedLineEnding) {
+        return detectedLineEnding;
+    }
+
+    return formatDocumentLineEnding(side.eol) ?? 'Unknown';
+}
+
+/**
+ * TextDocument.eol の値を表示用ラベルへ変換します。
+ * @param eol VS Code が保持している改行コードです。
+ * @returns 対応する表示ラベル、未定義時は undefined です。
+ */
+function formatDocumentLineEnding(eol: vscode.EndOfLine | undefined): string | undefined {
+    if (eol === vscode.EndOfLine.CRLF) {
         return 'CRLF';
     }
 
-    if (side.eol === vscode.EndOfLine.LF) {
+    if (eol === vscode.EndOfLine.LF) {
         return 'LF';
     }
 
-    return 'Unknown';
+    return undefined;
+}
+
+/**
+ * 生バイトから表示用の改行コードラベルを判定します。
+ * @param rawBytes 判定対象の生バイト列です。
+ * @param encoding VS Code が報告するエンコーディング名です。
+ * @returns 判定できた場合は表示用ラベル、できない場合は undefined です。
+ */
+function detectLineEndingLabel(rawBytes: Uint8Array | undefined, encoding: string | undefined): string | undefined {
+    if (!rawBytes || rawBytes.length === 0) {
+        return undefined;
+    }
+
+    const decoderLabels = new Set<string>();
+    const bomDecoderLabel = detectBomDecoderLabel(rawBytes);
+
+    if (bomDecoderLabel) {
+        decoderLabels.add(bomDecoderLabel);
+    }
+
+    for (const decoderLabel of getDecoderLabelsForEncoding(encoding)) {
+        decoderLabels.add(decoderLabel);
+    }
+
+    if (decoderLabels.size === 0) {
+        for (const decoderLabel of COMMON_DECODER_LABELS) {
+            decoderLabels.add(decoderLabel);
+        }
+    }
+
+    for (const decoderLabel of decoderLabels) {
+        const decoded = tryDecodeBytes(rawBytes, decoderLabel);
+
+        if (decoded !== undefined) {
+            return classifyLineEndingText(decoded);
+        }
+    }
+
+    return undefined;
+}
+
+/**
+ * デコード済み文字列に含まれる改行コード種別を分類します。
+ * @param value 判定対象の文字列です。
+ * @returns 表示用ラベルです。
+ */
+function classifyLineEndingText(value: string): string {
+    let sawCrLf = false;
+    let sawLf = false;
+    let sawCr = false;
+
+    for (let index = 0; index < value.length; index += 1) {
+        const character = value[index];
+
+        if (character === '\r') {
+            if (value[index + 1] === '\n') {
+                sawCrLf = true;
+                index += 1;
+            } else {
+                sawCr = true;
+            }
+        } else if (character === '\n') {
+            sawLf = true;
+        }
+
+        if ((sawCrLf && sawLf) || (sawCrLf && sawCr) || (sawLf && sawCr)) {
+            return 'Mixed';
+        }
+    }
+
+    if (sawCrLf) {
+        return 'CRLF';
+    }
+
+    if (sawLf) {
+        return 'LF';
+    }
+
+    if (sawCr) {
+        return 'CR';
+    }
+
+    return 'None';
 }
 
 /**
@@ -591,6 +753,33 @@ function getDecoderBaseScore(decoderLabel: string): number {
 async function readRawBytes(uri: vscode.Uri): Promise<Uint8Array | undefined> {
     try {
         return await vscode.workspace.fs.readFile(uri);
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Git 仮想 URI の query を解析します。
+ * @param uri 解析対象の URI です。
+ * @returns 解析できた Git URI パラメーターです。
+ */
+function tryParseGitUri(uri: vscode.Uri): GitUriParams | undefined {
+    if (uri.scheme !== 'git' || !uri.query) {
+        return undefined;
+    }
+
+    try {
+        const parsed = JSON.parse(uri.query) as Partial<GitUriParams>;
+
+        if (typeof parsed.path !== 'string' || typeof parsed.ref !== 'string') {
+            return undefined;
+        }
+
+        return {
+            path: parsed.path,
+            ref: parsed.ref,
+            submoduleOf: typeof parsed.submoduleOf === 'string' ? parsed.submoduleOf : undefined
+        };
     } catch {
         return undefined;
     }
