@@ -1,3 +1,7 @@
+## [1.0.5]
+
+- Bug fix.
+
 ## [1.0.4]
 
 - Normalize line endings before diffing so CRLF and LF differences do not expand into full-file diffs.
