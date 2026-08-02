@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
-import { TextDecoder } from 'node:util';
+import { execFile } from 'node:child_process';
+import { stat } from 'node:fs/promises';
+import * as path from 'node:path';
+import { promisify, TextDecoder } from 'node:util';
 import { ActiveDiffState } from './activeDiffTracker';
 import {
     buildDiffModel,
@@ -13,6 +16,12 @@ import {
  */
 const MAX_FILE_SIZE_KB = 512;
 const MAX_RENDERED_LINES = 8000;
+const GIT_COMMAND_TIMEOUT_MS = 5000;
+const GIT_BLOB_CACHE_TTL_MS = 1000;
+const MAX_GIT_BLOB_CACHE_ENTRIES = 32;
+const execFileAsync = promisify(execFile);
+const gitBlobBytesCache = new Map<string, GitBlobCacheEntry>();
+const gitBlobInFlightCache = new Map<string, Promise<Uint8Array | undefined>>();
 const COMMON_DECODER_LABELS = [
     'utf-8',
     'utf-16le',
@@ -72,6 +81,16 @@ interface GitUriParams {
     path: string;
     ref: string;
     submoduleOf?: string;
+}
+
+interface GitRepositoryContext {
+    root: string;
+    relativePath: string;
+}
+
+interface GitBlobCacheEntry {
+    promise: Promise<Uint8Array | undefined>;
+    expiresAt: number;
 }
 
 /**
@@ -170,27 +189,17 @@ export async function loadViewState(
 async function readTextSide(uri: vscode.Uri, fallbackLabel: string): Promise<TextSide> {
     const label = describeUri(uri, fallbackLabel);
 
-    // git 仮想ドキュメントは autocrlf により常に LF 正規化されるため、
-    // EOL 表示専用にディスクの実ファイルを別途読んで判定します。
-    // rawBytes は差分テキスト比較用として git 仮想 FS から読みます。
-    let eolOverride: string | undefined;
-    if (uri.scheme === 'git') {
-        const gitUriParams = tryParseGitUri(uri);
-        if (gitUriParams?.path) {
-            try {
-                const diskBytes = await vscode.workspace.fs.readFile(vscode.Uri.file(gitUriParams.path));
-                eolOverride = detectLineEndingLabel(diskBytes, undefined);
-            } catch {
-                // 削除済みファイル等、実ファイルが存在しない場合は無視します。
-            }
-        }
-    }
-
     try {
-        const [document, rawBytes] = await Promise.all([
+        const [document, rawBytes, gitBlobBytes, gitWorkingTreeBytes] = await Promise.all([
             vscode.workspace.openTextDocument(uri),
-            readRawBytes(uri)
+            readRawBytes(uri),
+            readGitBlobBytes(uri),
+            readGitWorkingTreeBytes(uri)
         ]);
+        const eolBytes = gitBlobBytes ?? gitWorkingTreeBytes;
+        const eolOverride = eolBytes
+            ? detectLineEndingLabel(eolBytes, document.encoding)
+            : undefined;
 
         return {
             label,
@@ -213,7 +222,6 @@ async function readTextSide(uri: vscode.Uri, fallbackLabel: string): Promise<Tex
             text: '',
             missing: true,
             isDirty: false,
-            eolOverride,
             encoding: undefined,
             eol: undefined,
             lineCount: 0,
@@ -511,16 +519,14 @@ function detectLineEndingLabel(rawBytes: Uint8Array | undefined, encoding: strin
         decoderLabels.add(decoderLabel);
     }
 
-    if (decoderLabels.size === 0) {
-        for (const decoderLabel of COMMON_DECODER_LABELS) {
-            decoderLabels.add(decoderLabel);
-        }
+    for (const decoderLabel of COMMON_DECODER_LABELS) {
+        decoderLabels.add(decoderLabel);
     }
 
     for (const decoderLabel of decoderLabels) {
         const decoded = tryDecodeBytes(rawBytes, decoderLabel);
 
-        if (decoded !== undefined) {
+        if (decoded !== undefined && looksLikeText(decoded)) {
             return classifyLineEndingText(decoded);
         }
     }
@@ -817,4 +823,330 @@ function containsNullByte(value: string): boolean {
  */
 function getConfiguredRenderWhitespace(): boolean {
     return vscode.workspace.getConfiguration('verticalDiff').get<boolean>('renderWhitespace') === true;
+}
+
+/**
+ * Git URI が指す ref の blob を読み込みます。
+ * 作業ツリーのファイルを読むと、履歴側の改行コードを現在のファイルで上書きしてしまうためです。
+ */
+async function readGitBlobBytes(uri: vscode.Uri): Promise<Uint8Array | undefined> {
+    const gitUriParams = tryParseGitUri(uri);
+
+    if (!gitUriParams?.path || gitUriParams.submoduleOf || gitUriParams.ref === 'wt') {
+        return undefined;
+    }
+
+    // Git 補助情報の取得は best effort です。ここで失敗しても、すでに開けている
+    // TextDocument まで missing として扱わないよう、処理全体を独立して捕捉します。
+    const cacheKey = JSON.stringify([
+        path.resolve(gitUriParams.path),
+        gitUriParams.ref,
+        gitUriParams.submoduleOf ?? ''
+    ]);
+    const cacheable = isStableGitRef(gitUriParams.ref);
+    const now = Date.now();
+
+    if (cacheable) {
+        const cachedBlob = gitBlobBytesCache.get(cacheKey);
+
+        if (cachedBlob && cachedBlob.expiresAt > now) {
+            // ヒットしたエントリを末尾へ移動し、実質的な LRU として扱います。
+            gitBlobBytesCache.delete(cacheKey);
+            gitBlobBytesCache.set(cacheKey, cachedBlob);
+            return cachedBlob.promise;
+        }
+
+        if (cachedBlob) {
+            gitBlobBytesCache.delete(cacheKey);
+        }
+    }
+
+    const inFlightBlob = gitBlobInFlightCache.get(cacheKey);
+
+    if (inFlightBlob) {
+        return inFlightBlob;
+    }
+
+    const blobPromise = (async (): Promise<Uint8Array | undefined> => {
+        try {
+            const repositoryContext = await resolveGitRepositoryContext(gitUriParams.path);
+
+            if (!repositoryContext) {
+                return undefined;
+            }
+
+            const objectName = await resolveGitObjectName(
+                gitUriParams.ref,
+                repositoryContext.root,
+                repositoryContext.relativePath
+            );
+
+            if (!objectName) {
+                return undefined;
+            }
+
+            // VS Code の Git FileSystemProvider と同じく textconv を適用します。
+            // これにより、表示中の Git ドキュメントと EOL 判定対象の内容を一致させます。
+            const blobBytes = await runGitBuffer(
+                [
+                    '-C',
+                    repositoryContext.root,
+                    'show',
+                    '--textconv',
+                    objectName
+                ],
+                MAX_FILE_SIZE_KB * 1024
+            );
+
+            return new Uint8Array(blobBytes);
+        } catch (error) {
+            console.debug(
+                `[vertical-diff] Failed to read git content for ${gitUriParams.ref}:${gitUriParams.path}`,
+                error
+            );
+            return undefined;
+        }
+    })();
+
+    gitBlobInFlightCache.set(cacheKey, blobPromise);
+
+    // 完了後は in-flight キャッシュから除去します。完了済みの mutable ref は
+    // キャッシュせず、index や HEAD の更新直後に古い EOL を表示しないようにします。
+    void blobPromise.finally(() => {
+        if (gitBlobInFlightCache.get(cacheKey) === blobPromise) {
+            gitBlobInFlightCache.delete(cacheKey);
+        }
+    });
+
+    if (cacheable) {
+        while (gitBlobBytesCache.size >= MAX_GIT_BLOB_CACHE_ENTRIES) {
+            const oldestKey = gitBlobBytesCache.keys().next().value as string | undefined;
+
+            if (oldestKey === undefined) {
+                break;
+            }
+
+            gitBlobBytesCache.delete(oldestKey);
+        }
+
+        gitBlobBytesCache.set(cacheKey, {
+            promise: blobPromise,
+            expiresAt: now + GIT_BLOB_CACHE_TTL_MS
+        });
+    }
+
+    return blobPromise;
+}
+
+/**
+ * wt/submodule の Git URI は履歴 blob ではなく、作業ツリーの実ファイルを基準にします。
+ */
+async function readGitWorkingTreeBytes(uri: vscode.Uri): Promise<Uint8Array | undefined> {
+    const gitUriParams = tryParseGitUri(uri);
+
+    if (!gitUriParams?.path || (gitUriParams.ref !== 'wt' && !gitUriParams.submoduleOf)) {
+        return undefined;
+    }
+
+    try {
+        return await vscode.workspace.fs.readFile(vscode.Uri.file(gitUriParams.path));
+    } catch {
+        // 削除済みファイルなど、作業ツリーに存在しない場合は無視します。
+        return undefined;
+    }
+}
+
+async function resolveGitRepositoryContext(filePathValue: string): Promise<GitRepositoryContext | undefined> {
+    const filePath = path.resolve(filePathValue);
+    const existingDirectory = await findExistingDirectory(path.dirname(filePath));
+
+    if (!existingDirectory) {
+        return undefined;
+    }
+
+    try {
+        const repositoryRoot = await resolveGitRepositoryRoot(existingDirectory);
+
+        if (!repositoryRoot) {
+            return undefined;
+        }
+
+        const relativePath = path.relative(repositoryRoot, filePath);
+
+        if (!relativePath
+            || path.isAbsolute(relativePath)
+            || relativePath === '..'
+            || relativePath.startsWith(`..${path.sep}`)) {
+            return undefined;
+        }
+
+        return {
+            root: repositoryRoot,
+            relativePath: relativePath.split(path.sep).join('/')
+        };
+    } catch (error) {
+        console.debug(`[vertical-diff] Failed to resolve Git repository for ${filePath}`, error);
+        return undefined;
+    }
+}
+
+async function resolveGitRepositoryRoot(startDirectory: string): Promise<string | undefined> {
+    let repositoryRootText: string;
+
+    try {
+        // 相対形式で取得すると、Git が UNC パスを返す環境でも startDirectory と
+        // 同じパス表現で解決でき、ドライブレターと UNC の不一致を避けられます。
+        repositoryRootText = await runGitText(
+            ['-C', startDirectory, 'rev-parse', '--path-format=relative', '--show-toplevel'],
+            1024 * 1024
+        );
+    } catch {
+        // Git 2.31 未満では --path-format がないため、絶対パスへフォールバックします。
+        repositoryRootText = await runGitText(
+            ['-C', startDirectory, 'rev-parse', '--show-toplevel'],
+            1024 * 1024
+        );
+    }
+
+    const normalizedRootText = trimGitPathOutput(repositoryRootText);
+
+    if (!normalizedRootText) {
+        return undefined;
+    }
+
+    return path.isAbsolute(normalizedRootText)
+        ? path.resolve(normalizedRootText)
+        : path.resolve(startDirectory, normalizedRootText);
+}
+
+function trimGitPathOutput(value: string): string {
+    // パス名に含まれる末尾スペースは保持し、Git が出力した改行だけ除去します。
+    return value.trimStart().replace(/[\r\n]+$/, '');
+}
+
+async function findExistingDirectory(startDirectory: string): Promise<string | undefined> {
+    let currentDirectory = path.resolve(startDirectory);
+
+    while (true) {
+        try {
+            if ((await stat(currentDirectory)).isDirectory()) {
+                return currentDirectory;
+            }
+        } catch {
+            // Deleted files/directories are valid Git URI targets. Continue with the parent.
+        }
+
+        const parentDirectory = path.dirname(currentDirectory);
+
+        if (parentDirectory === currentDirectory) {
+            return undefined;
+        }
+
+        currentDirectory = parentDirectory;
+    }
+}
+
+async function resolveGitObjectName(
+    ref: string,
+    repositoryRoot: string,
+    relativePath: string
+): Promise<string | undefined> {
+    if (ref === 'wt') {
+        // VS Code uses wt for submodule pseudo-documents. They are generated diffs,
+        // not blobs in the parent repository.
+        return undefined;
+    }
+
+    if (ref === '' || ref === 'index') {
+        return `:${relativePath}`;
+    }
+
+    if (ref === '~') {
+        return await hasStagedChange(repositoryRoot, relativePath)
+            ? `:${relativePath}`
+            : `HEAD:${relativePath}`;
+    }
+
+    const mergeStageMatch = /^~([1-3])$/.exec(ref);
+
+    if (mergeStageMatch) {
+        return `:${mergeStageMatch[1]}:${relativePath}`;
+    }
+
+    return `${ref}:${relativePath}`;
+}
+
+async function hasStagedChange(repositoryRoot: string, relativePath: string): Promise<boolean> {
+    const literalPathspec = `:(literal)${relativePath}`;
+    const output = await runGitText(
+        ['-C', repositoryRoot, 'diff', '--cached', '--name-only', '--', literalPathspec],
+        256 * 1024
+    );
+
+    return output.trim().length > 0;
+}
+
+function isStableGitRef(ref: string): boolean {
+    // ブランチ、HEAD、index は更新され得るため完了済みキャッシュを使いません。
+    // SHA-1/SHA-256 の完全な object ID は不変なので、履歴側だけキャッシュできます。
+    return /^[0-9a-f]{40}$|^[0-9a-f]{64}$/i.test(ref);
+}
+
+async function runGit(
+    args: string[],
+    encoding: 'utf8' | 'buffer',
+    maxBuffer: number
+): Promise<string | Buffer> {
+    let lastError: unknown;
+
+    for (const executable of getGitExecutableCandidates()) {
+        try {
+            const result = await execFileAsync(executable, args, {
+                encoding,
+                maxBuffer,
+                timeout: GIT_COMMAND_TIMEOUT_MS,
+                windowsHide: true
+            });
+
+            return result.stdout as string | Buffer;
+        } catch (error) {
+            lastError = error;
+
+            if (!isMissingExecutableError(error)) {
+                throw error;
+            }
+        }
+    }
+
+    throw lastError ?? new Error('Git executable was not found.');
+}
+
+async function runGitText(args: string[], maxBuffer: number): Promise<string> {
+    const output = await runGit(args, 'utf8', maxBuffer);
+    return typeof output === 'string' ? output : output.toString('utf8');
+}
+
+async function runGitBuffer(args: string[], maxBuffer: number): Promise<Buffer> {
+    const output = await runGit(args, 'buffer', maxBuffer);
+    return typeof output === 'string' ? Buffer.from(output) : output;
+}
+
+function getGitExecutableCandidates(): string[] {
+    const configuredPath = vscode.workspace.getConfiguration('git').get<unknown>('path');
+    const configuredCandidates = Array.isArray(configuredPath)
+        ? configuredPath.filter((value): value is string => typeof value === 'string' && value.length > 0)
+        : typeof configuredPath === 'string' && configuredPath.length > 0
+            ? [configuredPath]
+            : [];
+
+    return Array.from(new Set([...configuredCandidates, 'git']));
+}
+
+function isMissingExecutableError(error: unknown): boolean {
+    if (!error || typeof error !== 'object' || !('code' in error)) {
+        return false;
+    }
+
+    const code = (error as { code?: unknown }).code;
+    return code === 'ENOENT' || code === 'EACCES';
 }
