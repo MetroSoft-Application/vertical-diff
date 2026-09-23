@@ -10,6 +10,7 @@ Shows the active VS Code diff in a stacked panel.
 - Optional whitespace markers for spaces and tabs
 - Follows the active diff automatically while the panel is open
 - Move to the previous or next change
+- Move the diff editor to the corresponding line when navigating between changes
 - Set the same number of context rows before and after each change
 - Placeholder view for large or unsupported content
 

@@ -1,3 +1,7 @@
+## [1.0.6]
+
+- Move the diff editor to the corresponding line when navigating between changes in the Vertical Diff panel.
+
 ## [1.0.5]
 
 - Bug fix.
