@@ -27,6 +27,8 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
         title: 'Waiting For A Diff',
         detail: 'Open a diff editor to show it here.'
     };
+    private readonly lastDiffEditors: Partial<Record<DiffSide, vscode.TextEditor>> = {};
+    private lastDiffEditor: vscode.TextEditor | undefined;
     private readonly disposables: vscode.Disposable[] = [];
 
     /**
@@ -86,6 +88,11 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
 
             if (isContextRowsUpdateMessage(message)) {
                 void this.handleContextRowsUpdate(message.value);
+                return;
+            }
+
+            if (isNavigateToHunkMessage(message)) {
+                this.navigateEditorToHunk(message.payload);
             }
         });
 
@@ -145,6 +152,8 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             return;
         }
 
+        this.lastDiffEditors[matchedSide] = editor;
+        this.lastDiffEditor = editor;
         const activeLine = editor.selection.active.line + 1;
 
         await this.webviewView.webview.postMessage({
@@ -173,6 +182,8 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             return;
         }
 
+        this.lastDiffEditors[matchedSide] = editor;
+        this.lastDiffEditor = editor;
         const primaryRange = editor.visibleRanges[0];
 
         await this.webviewView.webview.postMessage({
@@ -303,6 +314,90 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             await this.pushViewPreferences();
             void vscode.window.showErrorMessage('Unable to save Vertical Diff context row settings.');
         }
+    }
+
+    /**
+     * Webview で選択されたハンクに対応する diff editor の行へ移動します。
+     * @param payload 元ファイルと変更後ファイルの移動先行です。
+     */
+    private navigateEditorToHunk(payload: NavigateToHunkPayload): void {
+        const activeDiff = this.tracker.value;
+
+        if (!activeDiff) {
+            return;
+        }
+
+        const activeEditorSide = getDiffSideForEditor(activeDiff, vscode.window.activeTextEditor?.document.uri);
+        const lastEditorSide = this.lastDiffEditor
+            ? getDiffSideForEditor(activeDiff, this.lastDiffEditor.document.uri)
+            : undefined;
+        const preferredSide = activeEditorSide ?? lastEditorSide ?? 'modified';
+        const preferredLine = getLineForSide(payload, preferredSide);
+        const fallbackSide: DiffSide = preferredSide === 'original' ? 'modified' : 'original';
+        const fallbackLine = getLineForSide(payload, fallbackSide);
+        let target: vscode.TextEditor | undefined;
+        let lineNumber: number | null = null;
+
+        if (preferredLine !== null) {
+            target = this.findDiffEditor(activeDiff, preferredSide);
+            lineNumber = preferredLine;
+        }
+
+        if (!target && fallbackLine !== null) {
+            target = this.findDiffEditor(activeDiff, fallbackSide);
+            lineNumber = fallbackLine;
+        }
+
+        if (!target || lineNumber === null) {
+            return;
+        }
+
+        const line = Math.min(lineNumber - 1, Math.max(0, target.document.lineCount - 1));
+        const position = new vscode.Position(line, 0);
+        target.selection = new vscode.Selection(position, position);
+        target.revealRange(
+            new vscode.Range(position, position),
+            vscode.TextEditorRevealType.InCenter
+        );
+    }
+
+    /**
+     * 指定した差分側に対応する表示中のエディターを返します。
+     * @param activeDiff 現在追跡中の差分状態です。
+     * @param side 検索対象の差分側です。
+     * @returns 対応する表示中のエディター、または未表示の場合は undefined です。
+     */
+    private findDiffEditor(
+        activeDiff: ActiveDiffState,
+        side: DiffSide
+    ): vscode.TextEditor | undefined {
+        const uri = side === 'original' ? activeDiff.original : activeDiff.modified;
+        const visibleEditors = vscode.window.visibleTextEditors;
+        const sideEditor = this.lastDiffEditors[side];
+
+        if (
+            sideEditor
+            && visibleEditors.includes(sideEditor)
+            && sideEditor.document.uri.toString() === uri.toString()
+        ) {
+            return sideEditor;
+        }
+
+        if (
+            this.lastDiffEditor
+            && visibleEditors.includes(this.lastDiffEditor)
+            && this.lastDiffEditor.document.uri.toString() === uri.toString()
+        ) {
+            return this.lastDiffEditor;
+        }
+
+        const activeEditor = vscode.window.activeTextEditor;
+
+        if (activeEditor?.document.uri.toString() === uri.toString()) {
+            return activeEditor;
+        }
+
+        return visibleEditors.find((editor) => editor.document.uri.toString() === uri.toString());
     }
 
     /**
@@ -1200,6 +1295,28 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             }
 
             renderActiveWindow();
+            notifyEditorOfActiveHunk();
+        }
+
+        /**
+         * 現在選択されているハンクの行番号を拡張機能側へ通知します。
+         */
+        function notifyEditorOfActiveHunk() {
+            if (!state.model || state.activeHunkIndex < 0) {
+                return;
+            }
+
+            const hunk = state.model.hunks[state.activeHunkIndex];
+            const originalRange = getHunkLineRange(hunk, 'original');
+            const modifiedRange = getHunkLineRange(hunk, 'modified');
+
+            vscode.postMessage({
+                type: 'navigateToHunk',
+                payload: {
+                    originalLine: originalRange?.start ?? null,
+                    modifiedLine: modifiedRange?.start ?? null
+                }
+            });
         }
 
         /**
@@ -1761,6 +1878,47 @@ interface ContextRowsUpdateMessage {
     value: number;
 }
 
+interface NavigateToHunkPayload {
+    originalLine: number | null;
+    modifiedLine: number | null;
+}
+
+interface NavigateToHunkMessage {
+    type: 'navigateToHunk';
+    payload: NavigateToHunkPayload;
+}
+
+function isNavigateToHunkMessage(message: unknown): message is NavigateToHunkMessage {
+    if (!message || typeof message !== 'object') {
+        return false;
+    }
+
+    const candidate = message as {
+        type?: unknown;
+        payload?: {
+            originalLine?: unknown;
+            modifiedLine?: unknown;
+        };
+    };
+    const isLineNumber = (value: unknown): value is number | null =>
+        value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value > 0);
+
+    return candidate.type === 'navigateToHunk'
+        && Boolean(candidate.payload)
+        && isLineNumber(candidate.payload?.originalLine)
+        && isLineNumber(candidate.payload?.modifiedLine);
+}
+
+/**
+ * 指定した差分側の移動先行番号を返します。
+ * @param payload Webview から受け取った移動先です。
+ * @param side 行番号を取得する差分側です。
+ * @returns 1 始まりの行番号、または移動先がない場合は null です。
+ */
+function getLineForSide(payload: NavigateToHunkPayload, side: DiffSide): number | null {
+    return side === 'original' ? payload.originalLine : payload.modifiedLine;
+}
+
 function isContextRowsUpdateMessage(message: unknown): message is ContextRowsUpdateMessage {
     if (!message || typeof message !== 'object') {
         return false;
@@ -1781,9 +1939,9 @@ function isContextRowsUpdateMessage(message: unknown): message is ContextRowsUpd
  */
 function getDiffSideForEditor(
     activeDiff: ActiveDiffState | undefined,
-    uri: vscode.Uri
+    uri: vscode.Uri | undefined
 ): DiffSide | undefined {
-    if (!activeDiff) {
+    if (!activeDiff || !uri) {
         return undefined;
     }
 
