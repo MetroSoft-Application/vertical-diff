@@ -10,6 +10,7 @@ Shows the active VS Code diff in a stacked panel.
 - Optional whitespace markers for spaces and tabs
 - Follows the active diff automatically while the panel is open
 - Move to the previous or next change
+- Set the same number of context rows before and after each change
 - Placeholder view for large or unsupported content
 
 ## Usage
@@ -35,6 +36,7 @@ Shows the active VS Code diff in a stacked panel.
 ## Settings
 
 - `verticalDiff.fontSize`: Panel font size. Set `0` to follow `editor.fontSize`.
+- `verticalDiff.contextRows`: Number of unchanged rows shown both before and after each change. Defaults to `0`. Enter it in the field beside the previous and next change buttons.
 - `verticalDiff.renderWhitespace`: Shows spaces as `·` and tabs as `→` in the panel. Enabled by default.
 
 ## Notes

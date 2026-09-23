@@ -45,12 +45,13 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             vscode.workspace.onDidChangeConfiguration((event) => {
                 const fontSizeChanged = event.affectsConfiguration('verticalDiff.fontSize');
                 const whitespaceChanged = event.affectsConfiguration('verticalDiff.renderWhitespace');
+                const contextRowsChanged = event.affectsConfiguration('verticalDiff.contextRows');
 
-                if (!fontSizeChanged && !whitespaceChanged) {
+                if (!fontSizeChanged && !whitespaceChanged && !contextRowsChanged) {
                     return;
                 }
 
-                if (fontSizeChanged) {
+                if (fontSizeChanged || contextRowsChanged) {
                     void this.pushViewPreferences();
                 }
 
@@ -80,6 +81,11 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
                 this.isWebviewReady = true;
                 void this.pushViewPreferences();
                 void this.pushCurrentState();
+                return;
+            }
+
+            if (isContextRowsUpdateMessage(message)) {
+                void this.handleContextRowsUpdate(message.value);
             }
         });
 
@@ -272,9 +278,31 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
         await this.webviewView.webview.postMessage({
             type: 'viewPreferences',
             payload: {
-                fontSize: getConfiguredVerticalDiffFontSize() ?? null
+                fontSize: getConfiguredVerticalDiffFontSize() ?? null,
+                contextRows: getConfiguredContextRows()
             }
         });
+    }
+
+    private async setContextRows(value: number): Promise<void> {
+        const configuration = vscode.workspace.getConfiguration('verticalDiff');
+        const inspected = configuration.inspect<number>('contextRows');
+        const target = inspected?.workspaceFolderValue !== undefined
+            ? vscode.ConfigurationTarget.WorkspaceFolder
+            : inspected?.workspaceValue !== undefined
+                ? vscode.ConfigurationTarget.Workspace
+                : vscode.ConfigurationTarget.Global;
+
+        await configuration.update('contextRows', value, target);
+    }
+
+    private async handleContextRowsUpdate(value: number): Promise<void> {
+        try {
+            await this.setContextRows(value);
+        } catch {
+            await this.pushViewPreferences();
+            void vscode.window.showErrorMessage('Unable to save Vertical Diff context row settings.');
+        }
     }
 
     /**
@@ -479,6 +507,101 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             font-size: 11px;
             white-space: nowrap;
             text-align: right;
+        }
+
+        .pane-header--context {
+            gap: 8px;
+        }
+
+        .pane-header--context .pane-meta {
+            flex: 0 1 auto;
+            max-width: 40%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .pane-context-controls {
+            display: flex;
+            align-items: center;
+            flex: 0 0 auto;
+            gap: 3px;
+        }
+
+        .pane-context-button {
+            display: grid;
+            width: 20px;
+            height: 18px;
+            place-items: center;
+            padding: 0;
+            border: 1px solid transparent;
+            border-radius: 3px;
+            background: transparent;
+            color: var(--vscode-icon-foreground, var(--vscode-foreground));
+            cursor: pointer;
+        }
+
+        .pane-context-button:hover {
+            background: var(--vscode-toolbar-hoverBackground);
+        }
+
+        .pane-context-button:focus-visible,
+        .context-rows-input:focus-visible {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
+        }
+
+        .pane-context-button svg {
+            width: 12px;
+            height: 12px;
+            fill: none;
+            stroke: currentColor;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            stroke-width: 1.6;
+        }
+
+        .context-rows-input {
+            width: 46px;
+            height: 18px;
+            padding: 1px 3px;
+            border: 1px solid var(--vscode-input-border, transparent);
+            border-radius: 2px;
+            background: var(--vscode-input-background, var(--vscode-editor-background));
+            color: var(--vscode-input-foreground, var(--vscode-editor-foreground));
+            font: inherit;
+            font-size: 11px;
+            text-align: center;
+        }
+
+        .context-rows-label {
+            color: var(--vscode-descriptionForeground);
+            font-size: 10px;
+        }
+
+        @media (max-width: 320px) {
+            .pane-header--context {
+                gap: 6px;
+                padding-right: 4px;
+                padding-left: 4px;
+            }
+
+            .pane-header--context .pane-path,
+            .pane-header--context .pane-meta,
+            .context-rows-label {
+                display: none;
+            }
+
+            .pane-context-controls {
+                gap: 2px;
+            }
+
+            .pane-context-button {
+                width: 18px;
+            }
+
+            .context-rows-input {
+                width: 42px;
+            }
         }
 
         .splitter {
@@ -785,10 +908,20 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
 
             <div class="diff-view" id="diff-view">
             <section class="pane">
-                <div class="pane-header">
+                <div class="pane-header pane-header--context">
                     <div class="pane-headline">
                         <div class="pane-badge">Original</div>
                         <div class="pane-path" id="original-path"></div>
+                    </div>
+                    <div class="pane-context-controls" role="group" aria-label="Diff context and navigation">
+                        <button class="pane-context-button" id="previous-hunk" type="button" aria-label="Previous change" title="Previous change">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 10l5-5 5 5" /></svg>
+                        </button>
+                        <button class="pane-context-button" id="next-hunk" type="button" aria-label="Next change" title="Next change">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 6l5 5 5-5" /></svg>
+                        </button>
+                        <label class="context-rows-label" for="context-rows">Context</label>
+                        <input class="context-rows-input" id="context-rows" type="number" min="0" step="1" value="0" aria-label="Context rows before and after each change" title="Context rows before and after each change" />
                     </div>
                     <div class="pane-meta" id="original-meta">Encoding: N/A | EOL: N/A</div>
                 </div>
@@ -820,8 +953,6 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
         const persistedState = vscode.getState() || {};
-        const CONTEXT_BEFORE_ROWS = 0;
-        const CONTEXT_AFTER_ROWS = 0;
         const MIN_FONT_SIZE = 9;
         const MAX_FONT_SIZE = 72;
         const state = {
@@ -830,6 +961,7 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             syncingScroll: false,
             resizing: false,
             configuredFontSize: ${configuredFontSize ?? 'null'},
+            contextRows: 0,
             userAdjustedZoom: false,
             fontSize: 14,
             splitRatio: clampNumber(persistedState.splitRatio, 0.5, 0.22, 0.78)
@@ -842,6 +974,7 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             emptyTitle: document.getElementById('empty-title'),
             emptyDetail: document.getElementById('empty-detail'),
             hunkSummary: document.getElementById('hunk-summary'),
+            contextRows: document.getElementById('context-rows'),
             modifiedMeta: document.getElementById('modified-meta'),
             originalMeta: document.getElementById('original-meta'),
             originalLines: document.getElementById('original-lines'),
@@ -851,6 +984,8 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
             modifiedPath: document.getElementById('modified-path'),
             modifiedScroll: document.getElementById('modified-scroll'),
             splitter: document.getElementById('splitter'),
+            previousHunk: document.getElementById('previous-hunk'),
+            nextHunk: document.getElementById('next-hunk'),
             surface: document.getElementById('surface'),
             zoomIndicator: document.getElementById('zoom-indicator')
         };
@@ -861,6 +996,9 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
 
         elements.originalScroll.addEventListener('scroll', () => syncScroll(elements.originalScroll, elements.modifiedScroll));
         elements.modifiedScroll.addEventListener('scroll', () => syncScroll(elements.modifiedScroll, elements.originalScroll));
+        elements.previousHunk.addEventListener('click', () => navigate('previous'));
+        elements.nextHunk.addEventListener('click', () => navigate('next'));
+        elements.contextRows.addEventListener('change', handleContextRowsInputChange);
         elements.surface.addEventListener('wheel', handleSurfaceWheel, { passive: false });
         elements.splitter.addEventListener('wheel', handleSplitterWheel, { passive: false });
         elements.splitter.addEventListener('pointerdown', beginResize);
@@ -922,11 +1060,46 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
          * @param payload 反映対象の設定です。
          */
         function applyViewPreferences(payload) {
-            state.configuredFontSize = normalizeConfiguredFontSize(payload?.fontSize);
-            state.userAdjustedZoom = false;
-            applyConfiguredFontSizeVariable();
-            state.fontSize = getAutoFontSize();
-            applyUiPreferences(false);
+            const configuredFontSize = normalizeConfiguredFontSize(payload?.fontSize);
+            const fontSizeChanged = state.configuredFontSize !== configuredFontSize;
+            state.configuredFontSize = configuredFontSize;
+            const contextRows = normalizeContextRows(payload?.contextRows);
+            const contextRowsChanged = state.contextRows !== contextRows;
+            state.contextRows = contextRows;
+            elements.contextRows.value = String(contextRows);
+            if (fontSizeChanged) {
+                state.userAdjustedZoom = false;
+                applyConfiguredFontSizeVariable();
+                state.fontSize = getAutoFontSize();
+                applyUiPreferences(false);
+            }
+
+            if (contextRowsChanged) {
+                renderActiveWindow();
+            }
+        }
+
+        /**
+         * 入力欄の前後コンテキスト行数を拡張機能ホストへ保存します。
+         */
+        function handleContextRowsInputChange() {
+            const value = elements.contextRows.valueAsNumber;
+
+            if (!Number.isSafeInteger(value) || value < 0) {
+                elements.contextRows.value = String(state.contextRows);
+                return;
+            }
+
+            if (state.contextRows === value) {
+                return;
+            }
+
+            state.contextRows = value;
+            renderActiveWindow();
+            vscode.postMessage({
+                type: 'updateContextRows',
+                value
+            });
         }
 
         /**
@@ -1371,6 +1544,19 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
         }
 
         /**
+         * 設定値を 0 以上の整数に正規化します。
+         * @param value 検証対象の設定値です。
+         * @returns 0 以上の整数です。
+         */
+        function normalizeContextRows(value) {
+            if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+                return 0;
+            }
+
+            return Math.floor(value);
+        }
+
+        /**
          * 現在選択されているハンクの表示範囲を描画します。
          */
         function renderActiveWindow() {
@@ -1463,8 +1649,8 @@ export class VerticalDiffViewProvider implements vscode.WebviewViewProvider, vsc
         function buildWindowModel(model, activeHunkIndex) {
             const hunk = model.hunks[activeHunkIndex];
             const totalRows = model.original.length;
-            const start = Math.max(0, hunk.startRow - CONTEXT_BEFORE_ROWS);
-            const end = Math.min(totalRows - 1, hunk.endRow + CONTEXT_AFTER_ROWS);
+            const start = Math.max(0, hunk.startRow - state.contextRows);
+            const end = Math.min(totalRows - 1, hunk.endRow + state.contextRows);
 
             return {
                 hunk,
@@ -1528,6 +1714,21 @@ function getConfiguredVerticalDiffFontSize(): number | undefined {
 }
 
 /**
+ * Vertical Diff の前後コンテキスト行数を設定から取得します。
+ * @param key 読み込むコンテキスト設定のキーです。
+ * @returns 0 以上の整数です。
+ */
+function getConfiguredContextRows(): number {
+    const value = vscode.workspace.getConfiguration('verticalDiff').get<number>('contextRows');
+
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+        return 0;
+    }
+
+    return Math.floor(value);
+}
+
+/**
  * Webview の Content Security Policy で使う nonce を生成します。
  * @returns 生成した nonce 文字列です。
  */
@@ -1553,6 +1754,23 @@ function isReadyMessage(message: unknown): message is { type: 'ready'; } {
     }
 
     return (message as { type?: string; }).type === 'ready';
+}
+
+interface ContextRowsUpdateMessage {
+    type: 'updateContextRows';
+    value: number;
+}
+
+function isContextRowsUpdateMessage(message: unknown): message is ContextRowsUpdateMessage {
+    if (!message || typeof message !== 'object') {
+        return false;
+    }
+
+    const candidate = message as { type?: unknown; value?: unknown; };
+    return candidate.type === 'updateContextRows'
+        && typeof candidate.value === 'number'
+        && Number.isSafeInteger(candidate.value)
+        && candidate.value >= 0;
 }
 
 /**

@@ -73,16 +73,6 @@
           "command": "verticalDiff.show",
           "when": "view == verticalDiff.view",
           "group": "navigation@1"
-        },
-        {
-          "command": "verticalDiff.previousHunk",
-          "when": "view == verticalDiff.view",
-          "group": "navigation@2"
-        },
-        {
-          "command": "verticalDiff.nextHunk",
-          "when": "view == verticalDiff.view",
-          "group": "navigation@3"
         }
       ]
     },
@@ -95,6 +85,13 @@
           "minimum": 0,
           "scope": "window",
           "markdownDescription": "Font size used by Vertical Diff. Set to `0` to follow `editor.fontSize`."
+        },
+        "verticalDiff.contextRows": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "scope": "window",
+          "markdownDescription": "Number of unchanged rows to show both before and after each change in the Vertical Diff panel."
         },
         "verticalDiff.renderWhitespace": {
           "type": "boolean",
